@@ -1,11 +1,15 @@
 import tkinter as tk
-from tkinter import ttk
-from tkinter import filedialog
+from tkinter import ttk, filedialog, font
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from mpl_toolkits.mplot3d import Axes3D
+from umap import UMAP
+import bson
+import socket
 import numpy as np
+import threading
 from config import *
+
 
 class Program:
     def __init__(self):
@@ -18,37 +22,29 @@ class Program:
         paned_window.add(self.side_frame)
         self.plot_frame = ttk.Frame(paned_window, width=self.window_width * 3 // 4)
         paned_window.add(self.plot_frame)
+        self.listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.listener.bind(("127.0.0.1", 5000))
+        self.conn = None
+        self.data = np.random.rand(100, 3)
+        client_thread = threading.Thread(target=self.handle_connection)
+        client_thread.daemon = True
+        client_thread.start()
+        self.params = {
+            "metric": tk.StringVar(value="euclidean"),
+            "n_neighbors": tk.StringVar(value="15"),
+            "min_dist": tk.StringVar(value="0.01"),
+        }
         self.configure()
-
     def start(self):
         self.root.mainloop()
 
     def configure(self):
-        self.root.title("Dataverse")
+        self.root.title("Dataverse - Controlador")
         self.root.resizable(0, 0)
         self.root.option_add("*Foreground", TEXT)
         self.root.option_add("*Background", BACKGROUND)
-        self.root.option_add("*Button.Foreground", TEXT)
-        self.root.option_add("*Button.Background", BACKGROUND)
-        self.root.option_add("*Label.Foreground", TEXT)
-        self.root.option_add("*Label.Background", BACKGROUND)
-        self.root.option_add("*Entry.Foreground", TEXT)
-        self.root.option_add("*Entry.Background", BACKGROUND)
         self.center_window()
         self.load_window()
-        points = np.array([
-            [1, 2, 3],
-            [4, 5, 6],
-            [7, 8, 9],
-            [10, 11, 12],
-            [13, 14, 15],
-            [16, 17, 18],
-            [19, 20, 21],
-            [22, 23, 24],
-            [25, 26, 27],
-            [28, 29, 30]
-        ])
-        self.create_plot(points)
 
     def center_window(self):
         screen_width = self.root.winfo_screenwidth()
@@ -66,11 +62,6 @@ class Program:
         file.add_command(label="Cargar imágenes", command=self.load)
         file.add_command(label="Guardar resultados", command=self.save)
 
-        config = tk.Menu(menu, tearoff=0)
-        menu.add_cascade(label="Configuración", menu=config)
-        config.add_command(label="Seleccionar método", command=self.select_method)
-        config.add_command(label="Modificar parámetros", command=self.modify_params)
-
         about = tk.Menu(menu, tearoff=0)
         menu.add_cascade(label="Acerca de", menu=about)
         about.add_command(label="Acerca de", command=self.about)
@@ -78,6 +69,8 @@ class Program:
         exit = tk.Menu(menu, tearoff=0)
         menu.add_cascade(label="Salir", menu=exit)
         exit.add_command(label="Salir", command=self.root.destroy)
+        self.create_plot(self.data)
+        self.load_side_frame()
 
     def load(self):
         folder_selected = filedialog.askdirectory()
@@ -85,12 +78,6 @@ class Program:
         # Procesar imagenes
 
     def save(self):
-        pass
-
-    def select_method(self):
-        pass
-
-    def modify_params(self):
         pass
 
     def about(self):
@@ -103,7 +90,7 @@ class Program:
     def create_plot(self, points):
         fig = Figure(figsize=(self.window_width * 3 // 4 / 100, self.window_height / 100), dpi=100)
         ax = fig.add_subplot(111, projection='3d')
-        ax.scatter(points[:, 0], points[:, 1], points[:, 2], c = COLOR)
+        ax.scatter(points[:, 0], points[:, 1], points[:, 2], c = [COLOR[idx % len(COLOR)] for idx in range(len(points))])
         ax.set_xlabel('X Label')
         ax.set_ylabel('Y Label')
         ax.set_zlabel('Z Label')
@@ -112,3 +99,40 @@ class Program:
         canvas = FigureCanvasTkAgg(fig, master=self.plot_frame)
         canvas.draw()
         canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
+    def handle_connection(self):
+        self.listener.listen()
+        print("Esperando conexion...")
+        self.conn, addr = self.listener.accept()
+        print("Navegador conectado")
+        while True:
+            msg = self.conn.recv(1024)
+            print(msg)
+            if not msg:
+                break
+            msg = bson.loads(msg)
+
+    def load_side_frame(self):
+        tk.Label(self.side_frame, text="Opciones", font=font.Font(size=15, weight="bold")).pack(pady=10)
+        tk.Label(self.side_frame, text="Métrica").pack()
+        tk.OptionMenu(self.side_frame, self.params["metric"], *["euclidean", "manhattan", "cosine"]).pack()
+        tk.Label(self.side_frame, text="Nro. de vecinos").pack()
+        tk.Entry(self.side_frame, textvariable=self.params["n_neighbors"]).pack()
+        tk.Label(self.side_frame, text="Distancia mínima").pack()
+        tk.Entry(self.side_frame, textvariable=self.params["min_dist"]).pack()
+        tk.Button(self.side_frame, text="Actualizar", command=self.update_visualization).pack()
+
+    def update_visualization(self):
+        # Obtener valores de los parámetros
+        metric = self.params["metric"].get()
+        n_neighbors = int(self.params["n_neighbors"].get())
+        min_dist = float(self.params["min_dist"].get())
+
+        # Aplicar uMAP con los parámetros seleccionados
+        umap = UMAP(metric=metric, n_neighbors=n_neighbors, min_dist=min_dist, n_components=3, random_state=42)
+        msg = {"points": umap.fit_transform(self.data).tolist()}
+        msg = bson.dumps(msg)
+        print("Tamaño", len(msg))
+        print("Enviando puntos al navegador...")
+        self.conn.sendall(msg)
+        print("Puntos enviados")
