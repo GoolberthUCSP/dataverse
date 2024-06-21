@@ -4,6 +4,9 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from mpl_toolkits.mplot3d import Axes3D
 from sklearn.datasets import load_digits
+from sklearn.cluster import HDBSCAN
+from sklearn.decomposition import PCA
+from sklearn.manifold import TSNE
 from umap import UMAP
 import socket
 import numpy as np
@@ -34,25 +37,38 @@ class Program:
         self.right_frame.pack_propagate(False)
         paned_window.add(self.right_frame, weight=0)
         
+        self.params = {
+            "umap_metric": tk.StringVar(value="euclidean"),
+            "umap_n_neighbors": tk.StringVar(value="15"),
+            "umap_min_dist": tk.StringVar(value="0.01"),
+            "tsne_metric": tk.StringVar(value="euclidean"),
+            "tsne_perplexity": tk.StringVar(value="30"),
+            "tsne_learning_rate": tk.StringVar(value="200"),
+            "tsne_early_exaggeration": tk.StringVar(value="12"),
+            "pca_whiten": tk.BooleanVar(value=True),
+            "pca_svd_solver": tk.StringVar(value="auto"),
+            "pca_tol": tk.StringVar(value="0.0"),
+            "hdbscan_metric": tk.StringVar(value="euclidean"),
+            "hdbscan_min_cluster_size": tk.StringVar(value="5"),
+            "hdbscan_cluster_selection_method": tk.StringVar(value="eom"),
+            "hdbscan_algorithm": tk.StringVar(value="auto"),
+        }
+        self.reduction_method = "umap"
+        self.reduction_options = {}
+        self.load_reduction_options()
         print("Creando socket...")
         self.listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.listener.bind(("192.168.103.100", 5000))
+        self.listener.bind(("127.0.0.1", 5000))
         self.listener.listen()
         print("Esperando conexion...")
         conn, addr = self.listener.accept()
         self.conn = conn
         print("Navegador conectado")
         
-        self.data =  load_digits().data #np.random.rand(10, 4)
+        self.data =  load_digits().data
         client_thread = threading.Thread(target=self.receive_messages)
         client_thread.daemon = True
         client_thread.start()
-        self.params = {
-            "umap_metric": tk.StringVar(value="euclidean"),
-            "umap_n_neighbors": tk.StringVar(value="15"),
-            "umap_min_dist": tk.StringVar(value="0.01"),
-            "hdbscan_metric": tk.StringVar(value="euclidean"),
-        }
         self.configure()
         
     def start(self):
@@ -63,6 +79,7 @@ class Program:
         self.root.resizable(0, 0)
         self.root.option_add("*Foreground", TEXT)
         self.root.option_add("*Background", BACKGROUND)
+        self.root.option_add("*Label.background", BACKGROUND)
         self.center_window()
         self.load_window()
 
@@ -76,33 +93,28 @@ class Program:
     def load_window(self):
         menu = tk.Menu(self.root)
         self.root.config(menu=menu)
-    
         file = tk.Menu(menu, tearoff=0)
         menu.add_cascade(label="Archivo", menu=file)
         file.add_command(label="Cargar imágenes", command=self.load)
         file.add_command(label="Guardar resultados", command=self.save)
-
         reduction = tk.Menu(menu, tearoff=0)
         menu.add_cascade(label="Método de reducción", menu=reduction)
-        reduction.add_command(label="UMAP", command=self.load_umap())
-        reduction.add_command(label="T-SNE", command=self.load_tsne())
-        reduction.add_command(label="PCA", command=self.load_pca())
-
+        reduction.add_command(label="UMAP", command=lambda: self.update_left_frame("umap"))
+        reduction.add_command(label="T-SNE", command=lambda: self.update_left_frame("tsne"))
+        reduction.add_command(label="PCA", command=lambda: self.update_left_frame("pca"))
         about = tk.Menu(menu, tearoff=0)
         menu.add_cascade(label="Acerca de", menu=about)
         about.add_command(label="Acerca de", command=self.about)
-
         exit = tk.Menu(menu, tearoff=0)
         menu.add_cascade(label="Salir", menu=exit)
         exit.add_command(label="Salir", command=self.root.destroy)
-        
         umap = UMAP(metric="euclidean", n_neighbors=15, min_dist=0.1, n_components=3)
         self.data = umap.fit_transform(self.dataset["vectors"])
         self.colors = [(0.0, 0.0, 0.0) for _ in range(self.dataset["size"])]
         self.create_plot()
         self.update_plot()
         self.conn.sendall(msgpack.packb({"type": "dataset", "points": self.data.tolist()}))
-        self.load_left_frame()
+        self.update_left_frame(self.reduction_method)
         self.load_right_frame()
 
     # Seleccionar carpeta desde un file browser
@@ -110,13 +122,6 @@ class Program:
         folder_selected = filedialog.askdirectory()
         print(folder_selected)
         # Procesar imagenes
-    
-    def load_umap(self):
-        pass
-    def load_tsne(self):
-        pass
-    def load_pca(self):
-        pass
 
     def save(self):
         pass
@@ -124,16 +129,15 @@ class Program:
     def about(self):
         about_window = tk.Toplevel(self.root)
         about_window.title("Acerca de")
-        about_window.geometry("300x200")
+        x = self.window_width // 2 - 150
+        y = self.window_height // 2 - 100
+        about_window.geometry(f"300x200+{x}+{y}")
         about_label = tk.Label(about_window, text=ABOUT_TXT, justify="center")
         about_label.pack(expand=True, fill='both', padx=10, pady=10)
 
     def create_plot(self):
-        fig = Figure(figsize=(self.window_width * 3 // 4 / 100, self.window_height / 100), dpi=100)
+        fig = Figure(figsize=(self.window_width / 100, self.window_height / 100), dpi=100)
         self.ax = fig.add_subplot(111, projection='3d')
-        self.ax.set_xlabel('X Label')
-        self.ax.set_ylabel('Y Label')
-        self.ax.set_zlabel('Z Label')
         self.ax.axis('equal')
         self.ax.axis('off')
         self.canvas = FigureCanvasTkAgg(fig, master=self.plot_frame)
@@ -173,18 +177,60 @@ class Program:
                     self.colors = [(0.0, 0.0, 0.0) for _ in range(len(self.data))]
                     self.update_plot()
 
-    def load_left_frame(self):
-        tk.Label(self.left_frame, text="Opciones", font=font.Font(size=15, weight="bold")).pack(pady=10)
-        tk.Label(self.left_frame, text="Métrica").pack()
-        tk.OptionMenu(self.left_frame, self.params["umap_metric"], *["euclidean", "manhattan", "cosine"]).pack()
-        tk.Label(self.left_frame, text="Nro. de vecinos").pack()
-        tk.Entry(self.left_frame, textvariable=self.params["umap_n_neighbors"]).pack()
-        tk.Label(self.left_frame, text="Distancia mínima").pack()
-        tk.Entry(self.left_frame, textvariable=self.params["umap_min_dist"]).pack()
-        tk.Button(self.left_frame, text="Actualizar", command=self.update_visualization).pack()
+    def load_reduction_options(self):
+        self.reduction_options = {
+            "umap": tk.Frame(self.left_frame),
+            "tsne": tk.Frame(self.left_frame),
+            "pca": tk.Frame(self.left_frame),
+        }
+        tk.Label(self.reduction_options["umap"], text="Opciones UMAP", font=font.Font(size=15, weight="bold")).pack(pady=10)
+        tk.Label(self.reduction_options["umap"], text="Métrica").pack(pady = 5)
+        tk.OptionMenu(self.reduction_options["umap"], self.params["umap_metric"], *["euclidean", "manhattan", "cosine"]).pack(pady = 5)
+        tk.Label(self.reduction_options["umap"], text="Nro. de vecinos").pack(pady = 5)
+        tk.Entry(self.reduction_options["umap"], textvariable=self.params["umap_n_neighbors"]).pack(pady = 5)
+        tk.Label(self.reduction_options["umap"], text="Distancia mínima").pack(pady = 5)
+        tk.Entry(self.reduction_options["umap"], textvariable=self.params["umap_min_dist"]).pack(pady = 5)
+        tk.Button(self.reduction_options["umap"], text="Actualizar", command=self.update_visualization).pack(pady = 5)
+
+        tk.Label(self.reduction_options["tsne"], text="Opciones TSNE", font=font.Font(size=15, weight="bold")).pack(pady=10)
+        tk.Label(self.reduction_options["tsne"], text="Métrica").pack(pady = 5)
+        tk.OptionMenu(self.reduction_options["tsne"], self.params["tsne_metric"], *["euclidean", "manhattan", "cosine"]).pack(pady = 5)
+        tk.Label(self.reduction_options["tsne"], text="Perplejidad").pack(pady = 5)
+        tk.Entry(self.reduction_options["tsne"], textvariable=self.params["tsne_perplexity"]).pack(pady = 5)
+        tk.Label(self.reduction_options["tsne"], text="Tasa de aprendizaje").pack(pady = 5)
+        tk.Entry(self.reduction_options["tsne"], textvariable=self.params["tsne_learning_rate"]).pack(pady = 5)
+        tk.Label(self.reduction_options["tsne"], text="Exageración de aprendizaje").pack(pady = 5)
+        tk.Entry(self.reduction_options["tsne"], textvariable=self.params["tsne_early_exaggeration"]).pack(pady = 5)
+        tk.Button(self.reduction_options["tsne"], text="Actualizar", command=self.update_visualization).pack(pady = 5)
+
+        tk.Label(self.reduction_options["pca"], text="Opciones PCA", font=font.Font(size=15, weight="bold")).pack(pady=10)
+        tk.Label(self.reduction_options["pca"], text="Blanqueamiento").pack(pady = 5)
+        tk.Checkbutton(self.reduction_options["pca"], variable=self.params["pca_whiten"]).pack(pady = 5)
+        tk.Label(self.reduction_options["pca"], text="SVD Solver").pack(pady = 5)
+        tk.OptionMenu(self.reduction_options["pca"], self.params["pca_svd_solver"], *["auto", "full", "arpack", "randomized"]).pack(pady = 5)
+        tk.Label(self.reduction_options["pca"], text="Tolerancia").pack(pady = 5)
+        tk.Entry(self.reduction_options["pca"], textvariable=self.params["pca_tol"]).pack(pady = 5)
+        tk.Button(self.reduction_options["pca"], text="Actualizar", command=self.update_visualization).pack(pady = 5)
+
+    def update_left_frame(self, method):
+        self.reduction_method = method
+        for key, frame in self.reduction_options.items():
+            if key == self.reduction_method:
+                frame.pack(expand=True, fill='both', padx=10, pady=10)
+            else:
+                frame.pack_forget()
     
     def load_right_frame(self):
         tk.Label(self.right_frame, text="Opciones HDBScan", font=font.Font(size=15, weight="bold")).pack(pady=10)
+        tk.Label(self.right_frame, text="Métrica").pack(pady = 5)
+        tk.OptionMenu(self.right_frame, self.params["hdbscan_metric"], *["euclidean", "manhattan", "cosine"]).pack(pady = 5)
+        tk.Label(self.right_frame, text="Mínimo tamano de cluster").pack(pady = 5)
+        tk.Entry(self.right_frame, textvariable=self.params["hdbscan_min_cluster_size"]).pack(pady = 5)
+        tk.Label(self.right_frame, text="Método de selección de cluster").pack(pady = 5)
+        tk.OptionMenu(self.right_frame, self.params["hdbscan_cluster_selection_method"], *["eom", "leaf"]).pack(pady = 5)
+        tk.Label(self.right_frame, text="Algoritmo de clustering").pack(pady = 5)
+        tk.OptionMenu(self.right_frame, self.params["hdbscan_algorithm"], *["auto", "brute", "kd_tree", "ball_tree"]).pack(pady = 5)
+        tk.Button(self.right_frame, text="Actualizar", command=self.update_hdb_clustering).pack(pady = 5)
 
     def update_visualization(self):
         # Obtener valores de los parámetros
@@ -198,3 +244,13 @@ class Program:
         self.colors = [(0.0, 0.0, 0.0) for _ in range(self.dataset["size"])]
         self.update_plot()
         self.conn.sendall(msgpack.packb({"type": "dataset", "points": self.data.tolist()}))
+
+    def update_hdb_clustering(self):
+        # Obtener valores de los parámetros
+        metric = self.params["hdbscan_metric"].get()
+        min_cluster_size = int(self.params["hdbscan_min_cluster_size"].get())
+        cluster_selection_method = self.params["hdbscan_cluster_selection_method"].get()
+        algorithm = self.params["hdbscan_algorithm"].get()
+
+        # Aplicar HDBScan con los parámetros seleccionados
+        # TODO: Implementar HDBScan
