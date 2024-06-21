@@ -3,40 +3,58 @@ from tkinter import ttk, filedialog, font
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from mpl_toolkits.mplot3d import Axes3D
+from sklearn.datasets import load_digits
 from umap import UMAP
-import bson
 import socket
 import numpy as np
 import threading
 from config import *
+import os
+import msgpack
 
+path = os.path.dirname(os.path.abspath(__file__))
 
 class Program:
     def __init__(self):
+        # Nota, el dataset esta hardcodeado por ahora
+        with open(path + "/" + "dataset/dataset.mpack", "rb") as f:
+            self.dataset = msgpack.load(f)
         self.root = tk.Tk()
         self.window_width = 1280
         self.window_height = 720
         paned_window = ttk.PanedWindow(self.root, orient=tk.HORIZONTAL)
         paned_window.pack(fill=tk.BOTH, expand=True)
-        self.side_frame = ttk.Frame(paned_window, width=self.window_width // 4)
-        self.side_frame.pack_propagate(False)
-        paned_window.add(self.side_frame, weight=0)
-        self.plot_frame = ttk.Frame(paned_window, width=self.window_width * 3 // 4)
+        self.left_frame = ttk.Frame(paned_window, width=self.window_width // 5)
+        self.left_frame.pack_propagate(False)
+        paned_window.add(self.left_frame, weight=0)
+        self.plot_frame = ttk.Frame(paned_window, width=self.window_width * 3 // 5)
         self.plot_frame.pack_propagate(False)
         paned_window.add(self.plot_frame, weight=0)
+        self.right_frame = ttk.Frame(paned_window, width=self.window_width // 5)
+        self.right_frame.pack_propagate(False)
+        paned_window.add(self.right_frame, weight=0)
+        
+        print("Creando socket...")
         self.listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.listener.bind((IP, PORT))
-        self.conn = None
-        self.data = np.random.rand(100, 3)
-        client_thread = threading.Thread(target=self.handle_connection)
+        self.listener.bind(("192.168.103.100", 5000))
+        self.listener.listen()
+        print("Esperando conexion...")
+        conn, addr = self.listener.accept()
+        self.conn = conn
+        print("Navegador conectado")
+        
+        self.data =  load_digits().data #np.random.rand(10, 4)
+        client_thread = threading.Thread(target=self.receive_messages)
         client_thread.daemon = True
         client_thread.start()
         self.params = {
-            "metric": tk.StringVar(value="euclidean"),
-            "n_neighbors": tk.StringVar(value="15"),
-            "min_dist": tk.StringVar(value="0.01"),
+            "umap_metric": tk.StringVar(value="euclidean"),
+            "umap_n_neighbors": tk.StringVar(value="15"),
+            "umap_min_dist": tk.StringVar(value="0.01"),
+            "hdbscan_metric": tk.StringVar(value="euclidean"),
         }
         self.configure()
+        
     def start(self):
         self.root.mainloop()
 
@@ -64,6 +82,12 @@ class Program:
         file.add_command(label="Cargar imágenes", command=self.load)
         file.add_command(label="Guardar resultados", command=self.save)
 
+        reduction = tk.Menu(menu, tearoff=0)
+        menu.add_cascade(label="Método de reducción", menu=reduction)
+        reduction.add_command(label="UMAP", command=self.load_umap())
+        reduction.add_command(label="T-SNE", command=self.load_tsne())
+        reduction.add_command(label="PCA", command=self.load_pca())
+
         about = tk.Menu(menu, tearoff=0)
         menu.add_cascade(label="Acerca de", menu=about)
         about.add_command(label="Acerca de", command=self.about)
@@ -71,13 +95,28 @@ class Program:
         exit = tk.Menu(menu, tearoff=0)
         menu.add_cascade(label="Salir", menu=exit)
         exit.add_command(label="Salir", command=self.root.destroy)
-        self.create_plot(self.data)
-        self.load_side_frame()
+        
+        umap = UMAP(metric="euclidean", n_neighbors=15, min_dist=0.1, n_components=3)
+        self.data = umap.fit_transform(self.dataset["vectors"])
+        self.colors = [(0.0, 0.0, 0.0) for _ in range(self.dataset["size"])]
+        self.create_plot()
+        self.update_plot()
+        self.conn.sendall(msgpack.packb({"type": "dataset", "points": self.data.tolist()}))
+        self.load_left_frame()
+        self.load_right_frame()
 
+    # Seleccionar carpeta desde un file browser
     def load(self):
         folder_selected = filedialog.askdirectory()
         print(folder_selected)
         # Procesar imagenes
+    
+    def load_umap(self):
+        pass
+    def load_tsne(self):
+        pass
+    def load_pca(self):
+        pass
 
     def save(self):
         pass
@@ -89,52 +128,73 @@ class Program:
         about_label = tk.Label(about_window, text=ABOUT_TXT, justify="center")
         about_label.pack(expand=True, fill='both', padx=10, pady=10)
 
-    def create_plot(self, points):
+    def create_plot(self):
         fig = Figure(figsize=(self.window_width * 3 // 4 / 100, self.window_height / 100), dpi=100)
-        ax = fig.add_subplot(111, projection='3d')
-        ax.scatter(points[:, 0], points[:, 1], points[:, 2], c = [COLOR[idx % len(COLOR)] for idx in range(len(points))])
-        ax.set_xlabel('X Label')
-        ax.set_ylabel('Y Label')
-        ax.set_zlabel('Z Label')
-        ax.axis('equal')
-        ax.axis('off')
-        canvas = FigureCanvasTkAgg(fig, master=self.plot_frame)
-        canvas.draw()
-        canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        self.ax = fig.add_subplot(111, projection='3d')
+        self.ax.set_xlabel('X Label')
+        self.ax.set_ylabel('Y Label')
+        self.ax.set_zlabel('Z Label')
+        self.ax.axis('equal')
+        self.ax.axis('off')
+        self.canvas = FigureCanvasTkAgg(fig, master=self.plot_frame)
+        self.canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+    
+    def update_plot(self):
+        self.ax.scatter(self.data[:,0], self.data[:,1], self.data[:,2], c=self.colors)
+        self.canvas.draw()
 
-    def handle_connection(self):
-        self.listener.listen()
-        print("Esperando conexion...")
-        self.conn, addr = self.listener.accept()
-        print("Navegador conectado")
+    def receive_messages(self):
+        unpacker = msgpack.Unpacker()
         while True:
-            msg = self.conn.recv(1024)
-            print(msg)
-            if not msg:
+            data = self.conn.recv(64)
+            if not data:
                 break
-            msg = bson.loads(msg)
+            unpacker.feed(data)
+            for msg in unpacker:
+                if msg['type'] == 'request_img':
+                    idx = msg['index']
+                    with open(path + "/" + self.dataset["folder_path"] + "/" + self.dataset["names"][idx], 'rb') as f:
+                        img = bytearray(f.read())
+                    img_msg = {
+                        'type': 'response_img',
+                        'txt': self.dataset["names"][idx],
+                        'img': img,
+                        'coords': self.data[idx].tolist(),
+                    }
+                    # print(img_msg)
+                    self.conn.sendall(msgpack.packb(img_msg))
+                    
+                elif msg['type'] == 'selection':
+                    for i in msg['indexes']:
+                        self.colors[i] = (1.0, 0.0, 0.0)
+                    self.update_plot()
 
-    def load_side_frame(self):
-        tk.Label(self.side_frame, text="Opciones", font=font.Font(size=15, weight="bold")).pack(pady=10)
-        tk.Label(self.side_frame, text="Métrica").pack()
-        tk.OptionMenu(self.side_frame, self.params["metric"], *["euclidean", "manhattan", "cosine"]).pack()
-        tk.Label(self.side_frame, text="Nro. de vecinos").pack()
-        tk.Entry(self.side_frame, textvariable=self.params["n_neighbors"]).pack()
-        tk.Label(self.side_frame, text="Distancia mínima").pack()
-        tk.Entry(self.side_frame, textvariable=self.params["min_dist"]).pack()
-        tk.Button(self.side_frame, text="Actualizar", command=self.update_visualization).pack()
+                elif msg['type'] == 'clear_selection':
+                    self.colors = [(0.0, 0.0, 0.0) for _ in range(len(self.data))]
+                    self.update_plot()
+
+    def load_left_frame(self):
+        tk.Label(self.left_frame, text="Opciones", font=font.Font(size=15, weight="bold")).pack(pady=10)
+        tk.Label(self.left_frame, text="Métrica").pack()
+        tk.OptionMenu(self.left_frame, self.params["umap_metric"], *["euclidean", "manhattan", "cosine"]).pack()
+        tk.Label(self.left_frame, text="Nro. de vecinos").pack()
+        tk.Entry(self.left_frame, textvariable=self.params["umap_n_neighbors"]).pack()
+        tk.Label(self.left_frame, text="Distancia mínima").pack()
+        tk.Entry(self.left_frame, textvariable=self.params["umap_min_dist"]).pack()
+        tk.Button(self.left_frame, text="Actualizar", command=self.update_visualization).pack()
+    
+    def load_right_frame(self):
+        tk.Label(self.right_frame, text="Opciones HDBScan", font=font.Font(size=15, weight="bold")).pack(pady=10)
 
     def update_visualization(self):
         # Obtener valores de los parámetros
-        metric = self.params["metric"].get()
-        n_neighbors = int(self.params["n_neighbors"].get())
-        min_dist = float(self.params["min_dist"].get())
+        metric = self.params["umap_metric"].get()
+        n_neighbors = int(self.params["umap_n_neighbors"].get())
+        min_dist = float(self.params["umap_min_dist"].get())
 
         # Aplicar uMAP con los parámetros seleccionados
-        umap = UMAP(metric=metric, n_neighbors=n_neighbors, min_dist=min_dist, n_components=3, random_state=42)
-        msg = {"points": umap.fit_transform(self.data).tolist()}
-        msg = bson.dumps(msg)
-        print("Tamaño", len(msg))
-        print("Enviando puntos al navegador...")
-        self.conn.sendall(msg)
-        print("Puntos enviados")
+        umap = UMAP(metric=metric, n_neighbors=n_neighbors, min_dist=min_dist, n_components=3)
+        self.data = umap.fit_transform(self.dataset["vectors"])
+        self.colors = [(0.0, 0.0, 0.0) for _ in range(self.dataset["size"])]
+        self.update_plot()
+        self.conn.sendall(msgpack.packb({"type": "dataset", "points": self.data.tolist()}))
