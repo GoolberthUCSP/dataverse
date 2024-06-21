@@ -14,6 +14,7 @@ import threading
 from config import *
 import os
 import msgpack
+import matplotlib.cm as cm
 
 path = os.path.dirname(os.path.abspath(__file__))
 
@@ -108,9 +109,10 @@ class Program:
         exit = tk.Menu(menu, tearoff=0)
         menu.add_cascade(label="Salir", menu=exit)
         exit.add_command(label="Salir", command=self.root.destroy)
-        umap = UMAP(metric="euclidean", n_neighbors=15, min_dist=0.1, n_components=3)
+        umap = UMAP(metric="euclidean", n_neighbors=15, min_dist=0.1, n_components=3, random_state=42)
         self.data = umap.fit_transform(self.dataset["vectors"])
-        self.colors = [(0.0, 0.0, 0.0) for _ in range(self.dataset["size"])]
+        self.colors = [(1.0, 1.0, 1.0) for _ in range(self.dataset["size"])]
+        self.edgecolors = [(0.0, 0.0, 0.0) for _ in range(self.dataset["size"])]
         self.create_plot()
         self.update_plot()
         self.conn.sendall(msgpack.packb({"type": "dataset", "points": self.data.tolist()}))
@@ -144,7 +146,7 @@ class Program:
         self.canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
     
     def update_plot(self):
-        self.ax.scatter(self.data[:,0], self.data[:,1], self.data[:,2], c=self.colors)
+        self.ax.scatter(self.data[:,0], self.data[:,1], self.data[:,2], c=self.colors, edgecolors=self.edgecolors)
         self.canvas.draw()
 
     def receive_messages(self):
@@ -170,11 +172,12 @@ class Program:
                     
                 elif msg['type'] == 'selection':
                     for i in msg['indexes']:
-                        self.colors[i] = (1.0, 0.0, 0.0)
+                        self.edgecolors[i] = (1.0, 0.0, 0.0)
+                    print(self.edgecolors)
                     self.update_plot()
 
                 elif msg['type'] == 'clear_selection':
-                    self.colors = [(0.0, 0.0, 0.0) for _ in range(len(self.data))]
+                    self.edgecolors = [(0.0, 0.0, 0.0) for _ in range(len(self.data))]
                     self.update_plot()
 
     def load_reduction_options(self):
@@ -239,9 +242,10 @@ class Program:
         min_dist = float(self.params["umap_min_dist"].get())
 
         # Aplicar uMAP con los parámetros seleccionados
-        umap = UMAP(metric=metric, n_neighbors=n_neighbors, min_dist=min_dist, n_components=3)
+        umap = UMAP(metric=metric, n_neighbors=n_neighbors, min_dist=min_dist, n_components=3, random_state=42)
         self.data = umap.fit_transform(self.dataset["vectors"])
-        self.colors = [(0.0, 0.0, 0.0) for _ in range(self.dataset["size"])]
+        self.colors = [(1.0, 1.0, 1.0) for _ in range(self.dataset["size"])]
+        self.edgecolors = [(0.0, 0.0, 0.0) for _ in range(self.dataset["size"])]
         self.update_plot()
         self.conn.sendall(msgpack.packb({"type": "dataset", "points": self.data.tolist()}))
 
@@ -253,4 +257,8 @@ class Program:
         algorithm = self.params["hdbscan_algorithm"].get()
 
         # Aplicar HDBScan con los parámetros seleccionados
-        # TODO: Implementar HDBScan
+        hdb = HDBSCAN(metric=metric, min_cluster_size=min_cluster_size, cluster_selection_method=cluster_selection_method, algorithm=algorithm)
+        hdb.fit(self.data)
+        self.colors = [cm.tab10(label) if label >= 0 else (1.0, 1.0, 1.0) for label in hdb.labels_]
+        print(len(self.colors), len(self.edgecolors), len(hdb.labels_))
+        self.update_plot()
